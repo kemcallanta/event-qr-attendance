@@ -1,1 +1,178 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Event QR Attendance</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f1f5f9;
+      color: #172033;
+      margin: 0;
+      padding: 20px;
+    }
+    main {
+      max-width: 520px;
+      margin: auto;
+      padding: 22px;
+      background: white;
+      border-radius: 16px;
+    }
+    input, button {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 13px;
+      margin: 8px 0;
+      font-size: 16px;
+      border-radius: 8px;
+    }
+    input { border: 1px solid #cbd5e1; }
+    button { background: #17365d; color: white; border: 0; }
+    #result {
+      padding: 15px;
+      border-radius: 10px;
+      background: #e2e8f0;
+      white-space: pre-line;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h2>Event Attendance Scanner</h2>
+  <p>Enter the staff name and start scanning.</p>
+
+  <input id="staff" placeholder="Staff name / Gate number">
+  <div id="reader"></div>
+  <div id="result" role="status">Ready to scan.</div>
+
+  <button onclick="startScanner()">Start camera</button>
+  <button onclick="stopScanner()">Stop camera</button>
+</main>
+
+<script>
+const API_URL = https://script.google.com/macros/s/AKfycbyHnJJie3my2xhHrYpqAMkDaP2SXwtx7WhWoHuakk0Gi0ZWOHnjKLP4k3u7QyWLSW4_/exec
+
+let scanner = null;
+let busy = false;
+let lastCode = '';
+let lastTime = 0;
+
+function show(message, status) {
+  const el = document.getElementById('result');
+  el.textContent = message;
+  el.style.background = {
+    'CHECKED IN': '#dcfce7',
+    'DUPLICATE': '#fef3c7',
+    'INVALID': '#fee2e2',
+    'NOT FOUND': '#fee2e2',
+    'ERROR': '#fee2e2'
+  }[status] || '#e2e8f0';
+}
+
+function startScanner() {
+  if (scanner) return;
+
+  scanner = new Html5Qrcode('reader');
+
+  scanner.start(
+    { facingMode: 'environment' },
+    { fps: 10, qrbox: { width: 240, height: 240 } },
+    handleScan,
+    () => {}
+  ).catch(err => {
+    scanner = null;
+    show('Camera error: ' + err, 'ERROR');
+  });
+}
+
+async function handleScan(qrValue) {
+  if (busy || (qrValue === lastCode &&
+      Date.now() - lastTime < 3000)) return;
+
+  busy = true;
+  lastCode = qrValue;
+  lastTime = Date.now();
+
+  try {
+    const requestId = crypto.randomUUID();
+
+    // Submit without reading the cross-origin response.
+    await fetch(API_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      body: JSON.stringify({
+        action: 'scan',
+        requestId,
+        qrValue,
+        scannerName:
+          document.getElementById('staff').value.trim()
+      })
+    });
+
+    show('Scan received. Checking attendance…', 'PENDING');
+
+    // Poll the read-only status endpoint using JSONP.
+    const result = await waitForResult(requestId);
+    show(result.message +
+      (result.name ? '\n' + result.name : ''), result.status);
+
+  } catch (err) {
+    show('Could not confirm attendance. Check the connection and Scan Log.',
+      'ERROR');
+  } finally {
+    busy = false;
+  }
+}
+
+function waitForResult(requestId) {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const callbackName = 'attendanceResultCallback';
+
+    window[callbackName] = data => {
+      if (data && data.ready) {
+        clearInterval(timer);
+        delete window[callbackName];
+        resolve(data);
+      }
+    };
+
+    function poll() {
+      attempts++;
+      if (attempts > 12) {
+        clearInterval(timer);
+        delete window[callbackName];
+        reject(new Error('Attendance confirmation timed out'));
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = API_URL +
+        '?action=status&requestId=' +
+        encodeURIComponent(requestId) +
+        '&callback=' + callbackName +
+        '&t=' + Date.now();
+
+      script.onerror = () => {};
+      document.body.appendChild(script);
+      script.onload = () => script.remove();
+    }
+
+    const timer = setInterval(poll, 1000);
+    poll();
+  });
+}
+
+function stopScanner() {
+  if (!scanner) return;
+  const current = scanner;
+  scanner = null;
+  current.stop().then(() => current.clear()).catch(() => {});
+}
+</script>
+</body>
+</html>
